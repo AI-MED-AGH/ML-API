@@ -3,4 +3,7 @@ name = "ml-api"
 version = "0.1.0"
 description = "A communication framework between client applications and machine learning models"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "fastapi>=0.124.4",
+    "uvicorn>=0.38.0",
+]
