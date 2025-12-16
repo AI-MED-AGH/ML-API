@@ -1,12 +1,12 @@
 import logging
 
-from aiohttp import ClientConnectorError
-from pydantic import BaseModel
 import aiohttp
-
-from src.common.uvicorn_server import UvicornServer
 from fastapi import Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+
+from src.common.model_routes import ModelRoutes, UnknownModelRoute
+from src.common.uvicorn_server import UvicornServer
 
 logger = logging.getLogger(__name__)
 
@@ -29,10 +29,7 @@ class MLRouter:
             ["POST"],
         )
 
-        self._routes = {
-            "model1": "http://0.0.0.0:8001",
-            "model2": "http://0.0.0.0:8002",
-        }
+        self._routes = ModelRoutes()
 
     def initialize(self):
         pass
@@ -41,10 +38,11 @@ class MLRouter:
         body = await request.json()
         pred_request = PredictRequest.model_validate(body)
 
-        if pred_request.model not in self._routes:
-            raise ValueError(f"Unknown model: '{pred_request.model}'")
+        try:
+            route = await self._routes.get_route(pred_request.model)
+        except UnknownModelRoute:
+            raise
 
-        route = self._routes[pred_request.model]
         logger.debug(f"Forwarding predict to {pred_request.model} on {route}")
 
         try:
