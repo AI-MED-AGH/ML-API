@@ -5,7 +5,7 @@ import aiohttp
 import redis.asyncio as aioredis
 from fastapi import FastAPI
 
-from src.api import health, predict
+from src.api import catalog, health, predict
 from src.common.errors import install_error_handlers
 from src.config import Settings
 
@@ -41,4 +41,5 @@ def create_app(settings: Settings | None = None, *, redis=None, session=None) ->
     install_error_handlers(app)
     app.include_router(health.router)
     app.include_router(predict.router)
+    app.include_router(catalog.router)
     return app
