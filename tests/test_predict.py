@@ -261,3 +261,29 @@ async def test_health_degraded_when_redis_down(http_session, settings):
         r = await c.get("/health")
     assert r.status_code == 503
     assert r.json() == {"status": "degraded"}
+
+
+async def test_nan_in_upstream_reply_is_passed_through_not_500(client, redis, upstream):
+    headers = await seed(redis, upstream)
+    upstream.body = b'{"score": NaN}'
+    r = await client.post("/predict", headers=headers, json={"model": "m1", "data": 1})
+    assert r.status_code == 200
+    assert r.content == b'{"score": NaN}'
+    assert r.headers["content-type"].startswith("application/json")
+
+
+async def test_upstream_retry_after_is_forwarded(client, redis, upstream):
+    headers = await seed(redis, upstream)
+    upstream.status = 503
+    upstream.headers = {"Retry-After": "30"}
+    r = await client.post("/predict", headers=headers, json={"model": "m1", "data": 1})
+    assert r.status_code == 503
+    assert r.headers["retry-after"] == "30"
+
+
+async def test_lifespan_session_has_per_host_connection_limit(redis, settings):
+    app = create_app(settings, redis=redis)
+    async with app.router.lifespan_context(app):
+        connector = app.state.session.connector
+        assert connector.limit == settings.upstream_max_connections
+        assert connector.limit_per_host == settings.upstream_max_connections_per_host

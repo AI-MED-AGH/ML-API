@@ -1,13 +1,20 @@
 import asyncio
 import json
 import logging
-from typing import Any
+from dataclasses import dataclass
 
 import aiohttp
 
 from src.common.errors import UpstreamError, UpstreamTimeout
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class UpstreamResponse:
+    status: int
+    body: bytes  # raw bytes, validated as JSON but never re-encoded
+    retry_after: str | None = None
 
 
 async def forward(
@@ -18,7 +25,7 @@ async def forward(
     total_timeout: float,
     connect_timeout: float,
     max_response_bytes: int = 50 * 1024 * 1024,
-) -> tuple[int, Any]:
+) -> UpstreamResponse:
     url = f"{base_url.rstrip('/')}/predict"
     timeout = aiohttp.ClientTimeout(total=total_timeout, connect=connect_timeout)
     try:
@@ -32,13 +39,13 @@ async def forward(
                     logger.warning("Upstream response exceeded %s bytes", max_response_bytes)
                     raise UpstreamError("Model response too large")
                 chunks.append(chunk)
+            body = b"".join(chunks)
             try:
-                # Parse the raw bytes ourselves: response.json() returns None for an empty body.
-                body = json.loads(b"".join(chunks))
+                json.loads(body)  # must be JSON (empty or HTML bodies are an upstream fault)
             except (ValueError, RecursionError):
                 logger.warning("Upstream returned a non-JSON body (status %s)", status)
                 raise UpstreamError("Model returned an invalid response")
-            return status, body
+            return UpstreamResponse(status, body, response.headers.get("Retry-After"))
     except asyncio.TimeoutError:
         raise UpstreamTimeout("Model did not respond in time")
     except aiohttp.ClientError:

@@ -14,6 +14,7 @@ class FakeUpstream:
         self.payload = {"ok": True}
         self.body: bytes | None = None  # raw body overrides payload
         self.delay = 0.0
+        self.headers: dict[str, str] = {}
         self._server: TestServer | None = None
 
     async def _handle(self, request: web.Request) -> web.Response:
@@ -21,8 +22,8 @@ class FakeUpstream:
         if self.delay:
             await asyncio.sleep(self.delay)
         if self.body is not None:
-            return web.Response(status=self.status, body=self.body)
-        return web.json_response(self.payload, status=self.status)
+            return web.Response(status=self.status, body=self.body, headers=self.headers)
+        return web.json_response(self.payload, status=self.status, headers=self.headers)
 
     async def start(self) -> None:
         app = web.Application()

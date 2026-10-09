@@ -2,7 +2,7 @@ import json
 import re
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import Response
 
 from src.auth.keys import AuthContext
 from src.common.errors import (
@@ -81,7 +81,7 @@ async def predict(request: Request, auth: AuthContext = Depends(get_auth)):
             },
         )
 
-    status, body = await forward(
+    upstream = await forward(
         get_session(request),
         route.url,
         payload,
@@ -89,4 +89,10 @@ async def predict(request: Request, auth: AuthContext = Depends(get_auth)):
         connect_timeout=settings.upstream_connect_timeout,
         max_response_bytes=settings.max_response_bytes,
     )
-    return JSONResponse(body, status_code=status)
+    headers = {"Retry-After": upstream.retry_after} if upstream.retry_after else None
+    return Response(
+        content=upstream.body,
+        status_code=upstream.status,
+        media_type="application/json",
+        headers=headers,
+    )

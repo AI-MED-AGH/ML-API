@@ -21,7 +21,12 @@ def create_app(settings: Settings | None = None, *, redis=None, session=None) ->
             app.state.redis = aioredis.from_url(settings.redis_url, decode_responses=True)
             owned.append(app.state.redis.aclose)
         if app.state.session is None:
-            app.state.session = aiohttp.ClientSession()
+            app.state.session = aiohttp.ClientSession(
+                connector=aiohttp.TCPConnector(
+                    limit=settings.upstream_max_connections,
+                    limit_per_host=settings.upstream_max_connections_per_host,
+                )
+            )
             owned.append(app.state.session.close)
         try:
             yield
