@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     upstream_connect_timeout: float = 3.0
     max_body_bytes: int = 10 * 1024 * 1024
     max_response_bytes: int = 50 * 1024 * 1024
+    job_owner_ttl: int = 86400
     upstream_max_connections: int = 200
     upstream_max_connections_per_host: int = 20
     activity_throttle_seconds: int = 10

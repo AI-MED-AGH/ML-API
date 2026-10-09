@@ -6,6 +6,6 @@
 - API-key authentication with per-model scopes (`X-API-Key`); out-of-scope models return 404.
 - **Breaking:** `POST /predict` now takes `{model, data, metadata}` and forwards everything but `model`,
   replacing the `model_data` wrapper.
-- New endpoints: `GET /models`, `GET /models/{name}/schema`, `GET /health`.
+- New endpoints: `GET /models`, `GET /models/{name}/schema`, `GET /health`, `POST /jobs` and `GET /jobs/{job_id}` (proxy to queue-mode models; only the submitting key can poll a job).
 - Uniform error responses, upstream timeouts, request and response size limits, wake requests for sleeping models.
 - Removed the old `UvicornServer` wrapper (it returned raw exception text on 500).

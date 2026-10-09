@@ -15,6 +15,8 @@ All endpoints except `/health` need an `X-API-Key: mlapi_<id>_<secret>` header.
 | Method & path | Purpose |
 |---|---|
 | `POST /predict` | Synchronous inference. Body `{"model": "name", "data": ..., "metadata": ...}`; everything except `model` is forwarded to the model's `/predict` |
+| `POST /jobs` | Submit work to a **queue-mode** model (long-running inference). Same body as `/predict`. Returns `202 {"job_id": "<model>~<id>"}` |
+| `GET /jobs/{job_id}` | Status and result of a job you submitted (anyone else gets 404) |
 | `GET /models` | Models this key may use: name, state, version |
 | `GET /models/{name}/schema` | The model's cached request/response schema and example |
 | `GET /health` | Unauthenticated: process and Redis |
@@ -30,7 +32,7 @@ Responses coming from a model are passed through unchanged.
 |---|---|---|
 | Missing, malformed, unknown, expired key | 401 | `Unauthorized` |
 | Unknown model or model outside the key's scope | 404 | `ModelNotFound` |
-| `/predict` on a queue-mode model | 400 | `WrongMode` |
+| `/predict` on a queue-mode model, or `/jobs` on a sync model | 400 | `WrongMode` |
 | Invalid body | 422 | `ValidationError` |
 | Body too large | 413 | `PayloadTooLarge` |
 | Model not ready (starting, sleeping, ...) | 503 + `Retry-After`, `X-Model-Status` | `ModelUnavailable` |
@@ -41,7 +43,7 @@ Responses coming from a model are passed through unchanged.
 ## Configuration
 
 Environment variables (see `.env.example`): `REDIS_URL` (required), `UPSTREAM_TIMEOUT`, `MAX_BODY_BYTES`,
-`MAX_RESPONSE_BYTES`, `ACTIVITY_THROTTLE_SECONDS`, `LOG_LEVEL`.
+`MAX_RESPONSE_BYTES`, `JOB_OWNER_TTL` (seconds a job stays pollable by its submitter, default 86400), `ACTIVITY_THROTTLE_SECONDS`, `LOG_LEVEL`.
 
 ## Running
 

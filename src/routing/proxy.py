@@ -17,19 +17,21 @@ class UpstreamResponse:
     retry_after: str | None = None
 
 
-async def forward(
+async def call(
     session: aiohttp.ClientSession,
-    base_url: str,
-    payload: dict,
+    method: str,
+    url: str,
+    payload: dict | None = None,
     *,
     total_timeout: float,
     connect_timeout: float,
     max_response_bytes: int = 50 * 1024 * 1024,
 ) -> UpstreamResponse:
-    url = f"{base_url.rstrip('/')}/predict"
+    """One request to a model container. The reply must be JSON, but its bytes are passed back unchanged."""
     timeout = aiohttp.ClientTimeout(total=total_timeout, connect=connect_timeout)
+    kwargs = {"json": payload} if payload is not None else {}
     try:
-        async with session.post(url, json=payload, timeout=timeout) as response:
+        async with session.request(method, url, timeout=timeout, **kwargs) as response:
             status = response.status
             chunks: list[bytes] = []
             total = 0
@@ -51,3 +53,19 @@ async def forward(
     except aiohttp.ClientError:
         logger.warning("Upstream connection failed", exc_info=True)
         raise UpstreamError("Could not reach the model")
+
+
+async def forward(
+    session: aiohttp.ClientSession,
+    base_url: str,
+    payload: dict,
+    *,
+    total_timeout: float,
+    connect_timeout: float,
+    max_response_bytes: int = 50 * 1024 * 1024,
+) -> UpstreamResponse:
+    """POST a prediction request to the model's /predict."""
+    return await call(
+        session, "POST", f"{base_url.rstrip('/')}/predict", payload,
+        total_timeout=total_timeout, connect_timeout=connect_timeout, max_response_bytes=max_response_bytes,
+    )
