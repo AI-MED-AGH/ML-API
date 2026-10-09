@@ -1,2 +1,6 @@
 __pycache__
 model_routes.json
+
+.env
+.pytest_cache
+.venv
