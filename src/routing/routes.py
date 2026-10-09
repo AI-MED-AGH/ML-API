@@ -1,6 +1,7 @@
 import json
 import logging
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 from redis.exceptions import RedisError
 
@@ -33,7 +34,7 @@ class RouteStore:
             if not isinstance(data, dict):
                 raise ValueError("not an object")
             return Route(
-                url=_require_str(data, "url"),
+                url=_require_http_url(data),
                 state=_require_str(data, "state"),
                 mode=_require_mode(data),
             )
@@ -65,3 +66,11 @@ def _require_mode(data: dict) -> str:
     if mode not in ("sync", "queue"):
         raise ValueError("mode must be 'sync' or 'queue'")
     return mode
+
+
+def _require_http_url(data: dict) -> str:
+    url = _require_str(data, "url")
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise ValueError("url must be an http(s) URL with a host")
+    return url

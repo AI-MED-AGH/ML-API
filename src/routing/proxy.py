@@ -17,15 +17,24 @@ async def forward(
     *,
     total_timeout: float,
     connect_timeout: float,
+    max_response_bytes: int = 50 * 1024 * 1024,
 ) -> tuple[int, Any]:
     url = f"{base_url.rstrip('/')}/predict"
     timeout = aiohttp.ClientTimeout(total=total_timeout, connect=connect_timeout)
     try:
         async with session.post(url, json=payload, timeout=timeout) as response:
             status = response.status
+            chunks: list[bytes] = []
+            total = 0
+            async for chunk in response.content.iter_chunked(64 * 1024):
+                total += len(chunk)
+                if total > max_response_bytes:
+                    logger.warning("Upstream response exceeded %s bytes", max_response_bytes)
+                    raise UpstreamError("Model response too large")
+                chunks.append(chunk)
             try:
                 # Parse the raw bytes ourselves: response.json() returns None for an empty body.
-                body = json.loads(await response.read())
+                body = json.loads(b"".join(chunks))
             except (ValueError, RecursionError):
                 logger.warning("Upstream returned a non-JSON body (status %s)", status)
                 raise UpstreamError("Model returned an invalid response")

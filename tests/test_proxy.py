@@ -50,3 +50,11 @@ async def test_connection_refused_maps_to_upstream_error(http_session):
 
 async def test_trailing_slash_in_base_url(upstream, http_session):
     assert (await forward(http_session, upstream.url + "/", {"data": 1}, **KW))[0] == 200
+
+
+async def test_oversized_upstream_response_is_rejected(upstream, http_session):
+    upstream.body = b'{"x": "' + b"a" * 5000 + b'"}'
+    with pytest.raises(UpstreamError):
+        await forward(
+            http_session, upstream.url, {"data": 1}, max_response_bytes=1000, **KW
+        )

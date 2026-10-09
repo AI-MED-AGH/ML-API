@@ -87,5 +87,6 @@ async def predict(request: Request, auth: AuthContext = Depends(get_auth)):
         payload,
         total_timeout=settings.upstream_timeout,
         connect_timeout=settings.upstream_connect_timeout,
+        max_response_bytes=settings.max_response_bytes,
     )
     return JSONResponse(body, status_code=status)

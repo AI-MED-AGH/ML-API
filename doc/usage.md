@@ -119,3 +119,16 @@ http://0.0.0.0:8001/health
 Please use the first port specified in the port forwarding in the `docker run` command.
 
 Other endpoints (like `/predict`) are also available, please read [API endpoints](https://github.com/AI-MED-AGH/fast-ML-Api?tab=readme-ov-file#api-endpoints) docs section from `fastmlapi` package.
+
+## Calling models through the router
+
+Clients never talk to a model container directly. They call the router with an API key:
+
+```shell
+curl -X POST http://localhost:8000/predict \
+  -H "X-API-Key: mlapi_<id>_<secret>" -H "Content-Type: application/json" \
+  -d '{"model": "my-classifier", "data": {"features": [1.0, 2.0, 3.0]}}'
+```
+
+The router removes `model` and forwards `{"data": ..., "metadata": ...}` to the model's `/predict`.
+List the models a key may use with `GET /models`, and a model's input schema with `GET /models/{name}/schema`.

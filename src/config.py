@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     upstream_timeout: float = 60.0
     upstream_connect_timeout: float = 3.0
     max_body_bytes: int = 10 * 1024 * 1024
+    max_response_bytes: int = 50 * 1024 * 1024
     activity_throttle_seconds: int = 10
     wake_pending_ttl_seconds: int = 60
     retry_after_seconds: int = 5

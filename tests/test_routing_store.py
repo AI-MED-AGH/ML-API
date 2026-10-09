@@ -90,3 +90,13 @@ async def test_wake_enqueues_once_per_window(redis):
 
 async def test_wake_never_raises():
     assert await WakeRequester(BrokenRedis(), pending_ttl_seconds=60).request("m1") is False
+
+
+@pytest.mark.parametrize(
+    "url", ["file:///etc/passwd", "ftp://host/x", "gopher://h", "http://", "//host/x", "host:8000"]
+)
+async def test_route_with_non_http_url_is_rejected(redis, url):
+    import json
+
+    await redis.set("route:m1", json.dumps({"url": url, "state": "ready", "mode": "sync"}))
+    assert await RouteStore(redis).get("m1") is None
