@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import re
 from dataclasses import dataclass
 
 import aiohttp
@@ -17,6 +18,14 @@ class UpstreamResponse:
     retry_after: str | None = None
 
 
+_RETRY_AFTER_RE = re.compile(r"[0-9]{1,10}", re.ASCII)
+
+
+def _safe_retry_after(value: str | None) -> str | None:
+    """Only a plain number of seconds is passed on; anything else a model sends is dropped."""
+    return value if value is not None and _RETRY_AFTER_RE.fullmatch(value) else None
+
+
 async def call(
     session: aiohttp.ClientSession,
     method: str,
@@ -28,11 +37,16 @@ async def call(
     max_response_bytes: int = 50 * 1024 * 1024,
 ) -> UpstreamResponse:
     """One request to a model container. The reply must be JSON, but its bytes are passed back unchanged."""
-    timeout = aiohttp.ClientTimeout(total=total_timeout, connect=connect_timeout)
+    # sock_connect (not connect): waiting for a pooled connection must count against `total`, not the connect limit
+    timeout = aiohttp.ClientTimeout(total=total_timeout, sock_connect=connect_timeout)
     kwargs = {"json": payload} if payload is not None else {}
     try:
-        async with session.request(method, url, timeout=timeout, **kwargs) as response:
+        # never follow redirects: a model container must not be able to aim the Router at other hosts
+        async with session.request(method, url, timeout=timeout, allow_redirects=False, **kwargs) as response:
             status = response.status
+            if not 200 <= status <= 299 and not 400 <= status <= 599:
+                logger.warning("Upstream answered with unusable status %s", status)
+                raise UpstreamError("Model returned an unexpected response")
             chunks: list[bytes] = []
             total = 0
             async for chunk in response.content.iter_chunked(64 * 1024):
@@ -47,11 +61,12 @@ async def call(
             except (ValueError, RecursionError):
                 logger.warning("Upstream returned a non-JSON body (status %s)", status)
                 raise UpstreamError("Model returned an invalid response")
-            return UpstreamResponse(status, body, response.headers.get("Retry-After"))
+            return UpstreamResponse(status, body, _safe_retry_after(response.headers.get("Retry-After")))
     except asyncio.TimeoutError:
         raise UpstreamTimeout("Model did not respond in time")
-    except aiohttp.ClientError:
-        logger.warning("Upstream connection failed", exc_info=True)
+    except aiohttp.ClientError as exc:
+        # the exception text can contain raw bytes the model sent: log only its type
+        logger.warning("Upstream request failed: %s", type(exc).__name__)
         raise UpstreamError("Could not reach the model")
 
 

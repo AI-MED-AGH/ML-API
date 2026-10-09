@@ -47,8 +47,6 @@ def parse_predict_body(raw: bytes) -> tuple[str, dict]:
     model = body.get("model")
     if not isinstance(model, str) or not MODEL_NAME_RE.fullmatch(model):
         raise RequestInvalid("'model' must be a valid model name")
-    if "data" not in body:
-        raise RequestInvalid("'data' is required")
     return model, {k: v for k, v in body.items() if k != "model"}
 
 

@@ -9,6 +9,8 @@ from src.api import catalog, health, jobs, predict
 from src.common.errors import install_error_handlers
 from src.config import Settings
 
+logger = logging.getLogger(__name__)
+
 
 def create_app(settings: Settings | None = None, *, redis=None, session=None) -> FastAPI:
     settings = settings or Settings()
@@ -31,8 +33,11 @@ def create_app(settings: Settings | None = None, *, redis=None, session=None) ->
         try:
             yield
         finally:
-            for close in owned:
-                await close()
+            for close in owned:  # one failing close must not stop the others
+                try:
+                    await close()
+                except Exception:
+                    logger.exception("Error while shutting down")
 
     app = FastAPI(
         title="ML-Api router",

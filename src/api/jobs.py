@@ -93,7 +93,13 @@ async def submit_job(request: Request, auth: AuthContext = Depends(get_auth)):
     model_job_id = _extract_job_id(upstream.body)
     public_id = f"{model}~{model_job_id}"
     try:
-        await redis.set(f"jobowner:{public_id}", auth.key_id, ex=settings.job_owner_ttl)
+        # NX: a model that answers with an id that already exists must not take that job over from its owner
+        claimed = await redis.set(f"jobowner:{public_id}", auth.key_id, ex=settings.job_owner_ttl, nx=True)
+        if not claimed:
+            existing = await redis.get(f"jobowner:{public_id}")
+            if existing != auth.key_id:
+                raise UpstreamError("Model returned a job id that already exists")
+            await redis.expire(f"jobowner:{public_id}", settings.job_owner_ttl)
     except RedisError:
         raise RedisUnavailable("Authentication backend unavailable")
     return JSONResponse({"job_id": public_id}, status_code=202)
@@ -113,7 +119,8 @@ async def get_job(job_id: str, request: Request, auth: AuthContext = Depends(get
     ):
         raise ModelNotFound("Job not found")
     try:
-        owner = await redis.get(f"jobowner:{job_id}")
+        # polling keeps the ownership record alive for as long as the submitter still cares about the job
+        owner = await redis.getex(f"jobowner:{job_id}", ex=settings.job_owner_ttl)
     except RedisError:
         raise RedisUnavailable("Authentication backend unavailable")
     if owner != auth.key_id:  # also covers unknown and expired jobs: no way to tell them apart

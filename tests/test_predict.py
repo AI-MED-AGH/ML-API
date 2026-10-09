@@ -97,7 +97,6 @@ async def test_pattern_and_allow_all_scopes(client, redis, upstream):
         b"[1,2,3]",
         b'"just a string"',
         b"{}",
-        json.dumps({"model": "m1"}).encode(),  # missing data
         json.dumps({"model": 5, "data": 1}).encode(),
         json.dumps({"model": "../etc", "data": 1}).encode(),
         json.dumps({"model": "a:b", "data": 1}).encode(),
@@ -290,3 +289,16 @@ async def test_lifespan_session_has_per_host_connection_limit(redis, settings):
         connector = app.state.session.connector
         assert connector.limit == settings.upstream_max_connections
         assert connector.limit_per_host == settings.upstream_max_connections_per_host
+
+
+async def test_typed_models_receive_their_own_fields_without_a_data_wrapper(client, redis, upstream):
+    headers = await seed(redis, upstream)
+    r = await client.post("/predict", headers=headers, json={"model": "m1", "values": [1, 2, 3]})
+    assert r.status_code == 200
+    assert upstream.requests == [{"values": [1, 2, 3]}]            # `model` removed, everything else untouched
+
+
+async def test_a_body_with_only_a_model_name_is_forwarded_as_empty(client, redis, upstream):
+    headers = await seed(redis, upstream)
+    assert (await client.post("/predict", headers=headers, json={"model": "m1"})).status_code == 200
+    assert upstream.requests == [{}]

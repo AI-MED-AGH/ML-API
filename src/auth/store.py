@@ -42,7 +42,7 @@ class KeyStore:
         return AuthContext(
             key_id=parsed.key_id,
             allowed_models=tuple(record.get("allowed_models") or ()),
-            allow_all=bool(record.get("allow_all")),
+            allow_all=record.get("allow_all") is True,
         )
 
     @staticmethod

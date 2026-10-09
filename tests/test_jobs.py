@@ -132,7 +132,7 @@ async def test_model_that_is_not_ready_gives_503_without_waking(client, redis, u
 
 @pytest.mark.parametrize(
     "content",
-    [b"not json", b"[1]", json.dumps({"model": "m1"}).encode(), json.dumps({"model": "M1\n", "data": 1}).encode(), b"[" * 100_000],
+    [b"not json", b"[1]", json.dumps({"model": "M1\n", "data": 1}).encode(), b"[" * 100_000],
 )
 async def test_hostile_bodies_are_422(client, redis, upstream, content):
     headers = await seed(redis, upstream)
@@ -260,3 +260,54 @@ async def test_ids_with_control_or_unicode_characters_are_404_and_never_reach_th
     assert await _raw_get(app, f"/jobs/m1~abc-123{suffix}", headers["X-API-Key"]) == 404
     assert await _raw_get(app, f"/jobs/m1{suffix}~abc-123", headers["X-API-Key"]) == 404
     assert upstream.job_gets == []
+
+
+# ───────────── review findings ─────────────
+async def test_a_model_cannot_hand_out_an_existing_job_id_to_a_second_key(client, redis, upstream):
+    headers_a = await seed(redis, upstream)
+    first = await submit(client, headers_a)
+    assert first.status_code == 202
+    headers_b = {"X-API-Key": await store_key(redis, allowed_models=("m1",))}
+    second = await submit(client, headers_b)                       # the model answers with the same id again
+    assert second.status_code == 502 and second.json()["error_type"] == "UpstreamError"
+    assert await redis.get("jobowner:m1~abc-123") == key_id_of(headers_a)       # the owner did not change
+    upstream.job_get_payload = {"job_id": "abc-123", "status": "succeeded", "result": "A-secret-result"}
+    assert (await client.get("/jobs/m1~abc-123", headers=headers_b)).status_code == 404
+    assert (await client.get("/jobs/m1~abc-123", headers=headers_a)).status_code == 200
+
+
+async def test_the_same_key_resubmitting_an_id_is_fine(client, redis, upstream):
+    headers = await seed(redis, upstream)
+    assert (await submit(client, headers)).status_code == 202
+    assert (await submit(client, headers)).status_code == 202
+
+
+async def test_polling_extends_the_ownership_record(client, redis, upstream):
+    headers, job_id = await submitted(client, redis, upstream)
+    await redis.expire(f"jobowner:{job_id}", 30)
+    assert (await client.get(f"/jobs/{job_id}", headers=headers)).status_code == 200
+    assert await redis.ttl(f"jobowner:{job_id}") > 1000
+
+
+async def test_job_endpoints_never_follow_redirects(client, redis, upstream):
+    from tests.upstream import FakeUpstream
+
+    target = FakeUpstream()
+    await target.start()
+    try:
+        headers = await seed(redis, upstream)
+        upstream.redirect_to = f"{target.url}/jobs"
+        assert (await submit(client, headers)).status_code == 502
+        upstream.redirect_to = None
+        job_id = (await submit(client, headers)).json()["job_id"]
+        upstream.redirect_to = f"{target.url}/jobs/x"
+        assert (await client.get(f"/jobs/{job_id}", headers=headers)).status_code == 502
+        assert target.requests == [] and target.job_requests == [] and target.job_gets == []
+    finally:
+        await target.stop()
+
+
+async def test_typed_models_get_their_own_fields_through_jobs(client, redis, upstream):
+    headers = await seed(redis, upstream)
+    r = await client.post("/jobs", headers=headers, json={"model": "m1", "values": [1, 2]})
+    assert r.status_code == 202 and upstream.job_requests == [{"values": [1, 2]}]

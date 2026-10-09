@@ -64,3 +64,14 @@ async def test_redis_failure_is_503():
     _, _, raw = new_key()
     with pytest.raises(RedisUnavailable):
         await KeyStore(BrokenRedis()).authenticate(raw)
+
+
+@pytest.mark.parametrize("flag", ["false", "true", "0", 1, "yes", [], {}])
+async def test_allow_all_only_counts_when_it_is_exactly_true(redis, flag):
+    import hashlib
+
+    key_id, secret, raw = new_key()
+    await redis.set(f"key:{key_id}", json.dumps({
+        "hash": hashlib.sha256(secret.encode()).hexdigest(), "allowed_models": [], "allow_all": flag,
+        "expires_at": None, "name": "t"}))
+    assert not (await KeyStore(redis).authenticate(raw)).can_use("anything")

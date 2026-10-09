@@ -14,7 +14,7 @@ All endpoints except `/health` need an `X-API-Key: mlapi_<id>_<secret>` header.
 
 | Method & path | Purpose |
 |---|---|
-| `POST /predict` | Synchronous inference. Body `{"model": "name", "data": ..., "metadata": ...}`; everything except `model` is forwarded to the model's `/predict` |
+| `POST /predict` | Synchronous inference. Body `{"model": "name", ...}`: everything except `model` is forwarded unchanged to the model's `/predict`. Models that use `fastmlapi`'s default shape take `{"data": ..., "metadata": ...}`; models with a typed `request_model` take that model's own fields (`GET /models/{name}/schema` shows them) |
 | `POST /jobs` | Submit work to a **queue-mode** model (long-running inference). Same body as `/predict`. Returns `202 {"job_id": "<model>~<id>"}` |
 | `GET /jobs/{job_id}` | Status and result of a job you submitted (anyone else gets 404) |
 | `GET /models` | Models this key may use: name, state, version |
