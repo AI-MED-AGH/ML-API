@@ -4,7 +4,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-_KEY_RE = re.compile(r"^mlapi_([A-Za-z0-9]{12})_([A-Za-z0-9_-]{43})$")
+_KEY_RE = re.compile(r"mlapi_([A-Za-z0-9]{12})_([A-Za-z0-9_-]{43})", re.ASCII)
 
 
 @dataclass(frozen=True)
@@ -16,7 +16,7 @@ class ParsedKey:
 def parse_key(raw: str | None) -> ParsedKey | None:
     if not raw:
         return None
-    match = _KEY_RE.match(raw)
+    match = _KEY_RE.fullmatch(raw)
     if match is None:
         return None
     return ParsedKey(key_id=match.group(1), secret=match.group(2))

@@ -103,6 +103,9 @@ async def test_pattern_and_allow_all_scopes(client, redis, upstream):
         json.dumps({"model": "a:b", "data": 1}).encode(),
         json.dumps({"model": "x" * 100, "data": 1}).encode(),
         json.dumps({"model": "UPPER", "data": 1}).encode(),
+        json.dumps({"model": "m1\n", "data": 1}).encode(),
+        json.dumps({"model": "m1 ", "data": 1}).encode(),
+        json.dumps({"model": "ｍ1", "data": 1}).encode(),
         b"[" * 100_000,  # RecursionError in json.loads
         b"\xff\xfe\x00",
     ],

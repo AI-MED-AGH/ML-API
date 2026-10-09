@@ -6,6 +6,7 @@ from redis.exceptions import RedisError
 
 from src.auth.keys import AuthContext
 from src.common.errors import ModelNotFound, RedisUnavailable
+from src.api.predict import MODEL_NAME_RE
 from src.deps import get_auth, get_redis
 from src.routing.routes import RouteStore
 
@@ -52,7 +53,7 @@ async def list_models(request: Request, auth: AuthContext = Depends(get_auth)):
 
 @router.get("/models/{name}/schema")
 async def model_schema(name: str, request: Request, auth: AuthContext = Depends(get_auth)):
-    if not auth.can_use(name):
+    if not MODEL_NAME_RE.fullmatch(name) or not auth.can_use(name):
         raise ModelNotFound("Model not found")
     schema = await _read_schema(get_redis(request), name)
     if schema is None:

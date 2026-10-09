@@ -20,7 +20,7 @@ from src.routing.wake import WakeRequester
 
 router = APIRouter()
 
-MODEL_NAME_RE = re.compile(r"^[a-z0-9]([-a-z0-9]{0,38}[a-z0-9])?$")
+MODEL_NAME_RE = re.compile(r"[a-z0-9]([-a-z0-9]{0,38}[a-z0-9])?")
 
 
 async def read_limited_body(request: Request, limit: int) -> bytes:
@@ -45,7 +45,7 @@ def parse_predict_body(raw: bytes) -> tuple[str, dict]:
     if not isinstance(body, dict):
         raise RequestInvalid("Body must be a JSON object")
     model = body.get("model")
-    if not isinstance(model, str) or not MODEL_NAME_RE.match(model):
+    if not isinstance(model, str) or not MODEL_NAME_RE.fullmatch(model):
         raise RequestInvalid("'model' must be a valid model name")
     if "data" not in body:
         raise RequestInvalid("'data' is required")

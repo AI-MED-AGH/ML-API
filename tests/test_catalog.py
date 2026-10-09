@@ -54,3 +54,10 @@ async def test_schema_rejects_hostile_names(client, redis):
     headers = await seed(redis)
     r = await client.get("/models/..%2Fetc/schema", headers=headers)
     assert r.status_code == 404
+
+
+async def test_schema_endpoint_rejects_names_that_are_not_valid_model_names(client, redis):
+    await redis.set("schema:a:b", json.dumps({"model_version": "x"}))
+    allow_all = {"X-API-Key": await store_key(redis, allowed_models=(), allow_all=True)}
+    for name in ("a:b", "UPPER", "m1%0A"):
+        assert (await client.get(f"/models/{name}/schema", headers=allow_all)).status_code == 404

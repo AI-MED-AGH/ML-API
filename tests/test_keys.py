@@ -31,6 +31,8 @@ def test_parse_valid_key():
         "mlapi_" + "a" * 12 + "_" + "b" * 44,   # one char too long
         "mlapi_" + "a" * 11 + "!_" + "b" * 43,  # bad id char
         "mlapi_" + "a" * 12 + "_" + "b" * 42 + "!",
+        "mlapi_" + "a" * 12 + "_" + "b" * 43 + "\n",   # trailing newline
+        "mlapi_" + "ａ" * 12 + "_" + "b" * 43,         # full-width letters
     ],
 )
 def test_parse_rejects_malformed(raw):
