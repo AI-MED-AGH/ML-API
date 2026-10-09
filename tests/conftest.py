@@ -33,3 +33,13 @@ async def client(settings, redis, http_session):
     transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
     async with httpx.AsyncClient(transport=transport, base_url="http://router") as c:
         yield c
+
+
+@pytest_asyncio.fixture
+async def upstream():
+    from tests.upstream import FakeUpstream
+
+    server = FakeUpstream()
+    await server.start()
+    yield server
+    await server.stop()
