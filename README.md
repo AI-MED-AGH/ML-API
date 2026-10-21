@@ -39,11 +39,36 @@ Responses coming from a model are passed through unchanged.
 | Model unreachable / invalid or oversized reply | 502 | `UpstreamError` |
 | Model timeout | 504 | `UpstreamTimeout` |
 | Redis unreachable | 503 | `AuthBackendUnavailable` |
+| Over a rate limit | 429 | `RateLimited` (with `Retry-After`) |
+| Router holding too many model replies in memory | 503 | `RouterBusy` (with `Retry-After`) |
 
 ## Configuration
 
 Environment variables (see `.env.example`): `REDIS_URL` (required), `UPSTREAM_TIMEOUT`, `MAX_BODY_BYTES`,
 `MAX_RESPONSE_BYTES`, `JOB_OWNER_TTL` (seconds a job stays pollable by its submitter, default 86400), `ACTIVITY_THROTTLE_SECONDS`, `LOG_LEVEL`.
+
+Limits (all per API key, shared by every Router replica through Redis; `0` turns a limit off):
+`RATE_LIMIT_PER_MINUTE` (predict calls and job submissions together, default 120), `JOB_POLL_LIMIT_PER_MINUTE` (default 600),
+`JOB_SUBMIT_LIMIT_PER_DAY` (default 1000; a fixed window, so a client can use two days' worth around midnight UTC).
+Requests are counted after the key is verified and before the body is read; wrong keys never use up anyone's budget.
+
+Per key, an admin can override each of these on the key itself (`limits` on `POST`/`PATCH /v1/keys` in the Supervisor).
+`MAX_OUTSTANDING_JOBS` (default 100) is how many unfinished jobs a key may have at once: a job counts until a poll shows it
+succeeded or failed. A model can also publish its own limits (per key, for all keys, and concurrent requests); those and the
+defaults for models that publish none (`MODEL_RPM_PER_KEY`, `MODEL_RPM_TOTAL`, `MODEL_MAX_CONCURRENCY` = 16) are described in
+the platform contracts. Concurrency is per Router process and refuses with 429 `ModelBusy` instead of queueing.
+
+Every request with a valid key is logged (`key=… model=… status=… ms=…`, never the secret) and counted per key, model and UTC
+day (`USAGE_TTL_DAYS`, default 35; the Supervisor shows it at `GET /v1/keys/{id}/usage`).
+
+`EXPOSE_UPSTREAM_ERRORS` (default off): a model's 5xx reply body, and the error text of a failed job, are replaced by a generic
+message, because they can contain file paths and internals. 4xx bodies (the model explaining a bad input) still pass through.
+`ENABLE_DOCS` (default off) serves `/docs` and `/openapi.json`. `HEALTH_CACHE_SECONDS` (default 2) is how long `/health` reuses
+its last Redis check.
+
+`MAX_INFLIGHT_RESPONSE_BYTES` (default 128 MiB) caps the model replies one Router process holds in memory at once; peak use is
+about twice that, so keep it well under the pod's memory limit. Replies above 1 MiB are only checked for a JSON object/array
+shape, not fully parsed, because parsing blocks the whole replica.
 
 ## Running
 

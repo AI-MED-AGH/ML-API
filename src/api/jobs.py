@@ -1,5 +1,7 @@
 import json
+import logging
 import re
+import time
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, Response
@@ -10,15 +12,19 @@ from src.auth.keys import AuthContext
 from src.common.errors import (
     ModelNotFound,
     ModelUnavailable,
+    RateLimited,
     RedisUnavailable,
     UpstreamError,
     WrongMode,
 )
-from src.deps import get_auth, get_redis, get_session, get_settings
-from src.routing.proxy import UpstreamResponse, call
+from src.deps import get_budget, get_gate, get_redis, get_session, get_settings, rate_limited
+from src.limits import enforce_model_limits
+from src.routing.proxy import FULL_PARSE_LIMIT, UpstreamResponse, call
 from src.routing.routes import RouteStore
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
+_TERMINAL = ("succeeded", "failed")
 
 JOB_ID_RE = re.compile(r"[A-Za-z0-9-]{1,64}")
 
@@ -51,20 +57,65 @@ def _extract_job_id(body: bytes) -> str:
     return job_id
 
 
-def _rewrite_job_id(body: bytes, model_id: str, public_id: str) -> bytes:
-    """Clients only ever see the public id (`<model>~<id>`); other bodies pass through untouched."""
+def _rewrite_job(body: bytes, model_id: str, public_id: str, *, hide_errors: bool = False) -> tuple[bytes, str | None]:
+    """Clients only ever see the public id (`<model>~<id>`); other bodies pass through untouched.
+    Also returns the job's status, when the body says one."""
+    if len(body) > FULL_PARSE_LIMIT:
+        # A big result: parsing it would stall the replica. job_id and status come first in the reply, so edit the head.
+        head, tail = body[:1024], body[1024:]
+        status = re.search(rb'"status"\s*:\s*"([a-z]+)"', head)
+        head = re.sub(
+            rb'("job_id"\s*:\s*")' + re.escape(model_id.encode()) + rb'"',
+            lambda m: m.group(1) + public_id.encode() + b'"',
+            head,
+            count=1,
+        )
+        return head + tail, status.group(1).decode() if status else None
     try:
         data = json.loads(body)
     except (ValueError, RecursionError):
-        return body
-    if isinstance(data, dict) and data.get("job_id") == model_id:
-        data["job_id"] = public_id
-        return json.dumps(data).encode()
-    return body
+        return body, None
+    if not isinstance(data, dict):
+        return body, None
+    status = data.get("status") if isinstance(data.get("status"), str) else None
+    changed = False
+    if data.get("job_id") == model_id:
+        data["job_id"], changed = public_id, True
+    if hide_errors and status == "failed" and data.get("error") is not None:
+        data["error"], changed = "The job failed", True  # error_type stays: it names the kind of failure, not the internals
+    return (json.dumps(data).encode() if changed else body), status
 
 
-@router.post("/jobs", status_code=202)
-async def submit_job(request: Request, auth: AuthContext = Depends(get_auth)):
+def _outstanding_key(key_id: str) -> str:
+    return f"outstanding:{key_id}"
+
+
+async def _check_outstanding(redis, auth: AuthContext, settings) -> int:
+    """Refuses a new job while the key already has its allowance of unfinished ones. Returns the cap (0 = none)."""
+    limit = auth.limits.get("max_outstanding_jobs", settings.max_outstanding_jobs)
+    if limit <= 0:
+        return 0
+    try:
+        key = _outstanding_key(auth.key_id)
+        await redis.zremrangebyscore(key, "-inf", time.time())  # forget jobs whose record has expired
+        if await redis.zcard(key) >= limit:
+            raise RateLimited(
+                "Too many unfinished jobs; wait for some to complete",
+                headers={"Retry-After": str(settings.retry_after_seconds)},
+            )
+    except RedisError:
+        raise RedisUnavailable("Authentication backend unavailable")
+    return limit
+
+
+@router.post(
+    "/jobs",
+    status_code=202,
+    dependencies=[Depends(rate_limited("predict", "rate_limit_per_minute", "rpm", 60))],
+)
+async def submit_job(
+    request: Request, auth: AuthContext = Depends(rate_limited("job-submit", "job_submit_limit_per_day", "jobs_per_day", 86400))
+):
     settings = get_settings(request)
     redis = get_redis(request)
 
@@ -76,17 +127,23 @@ async def submit_job(request: Request, auth: AuthContext = Depends(get_auth)):
     route = await RouteStore(redis).get(model)
     if route is None:
         raise ModelNotFound("Model not found")
+    request.state.model = model  # only real models, so a client cannot invent usage entries
     if route.mode != "queue":
         raise WrongMode("This model is synchronous; use POST /predict")
+    await enforce_model_limits(request, auth, model, route)
     if route.state != "ready":
         raise _not_ready(settings, route.state)
+    tracked = await _check_outstanding(redis, auth, settings)
 
-    upstream = await call(
-        get_session(request), "POST", f"{route.url.rstrip('/')}/jobs", payload,
-        total_timeout=settings.upstream_timeout,
-        connect_timeout=settings.upstream_connect_timeout,
-        max_response_bytes=settings.max_response_bytes,
-    )
+    async with get_gate(request).slot(model, route.limits.get("max_concurrency", settings.model_max_concurrency)):
+        upstream = await call(
+            get_session(request), "POST", f"{route.url.rstrip('/')}/jobs", payload,
+            total_timeout=settings.upstream_timeout,
+            connect_timeout=settings.upstream_connect_timeout,
+            max_response_bytes=settings.max_response_bytes,
+            budget=get_budget(request),
+            expose_errors=settings.expose_upstream_errors,
+        )
     if not 200 <= upstream.status < 300:
         return _passthrough(upstream)
 
@@ -100,13 +157,21 @@ async def submit_job(request: Request, auth: AuthContext = Depends(get_auth)):
             if existing != auth.key_id:
                 raise UpstreamError("Model returned a job id that already exists")
             await redis.expire(f"jobowner:{public_id}", settings.job_owner_ttl)
+        if tracked:
+            key = _outstanding_key(auth.key_id)
+            await redis.zadd(key, {public_id: time.time() + settings.job_owner_ttl})
+            await redis.expire(key, settings.job_owner_ttl)
     except RedisError:
         raise RedisUnavailable("Authentication backend unavailable")
     return JSONResponse({"job_id": public_id}, status_code=202)
 
 
 @router.get("/jobs/{job_id:path}")
-async def get_job(job_id: str, request: Request, auth: AuthContext = Depends(get_auth)):
+async def get_job(
+    job_id: str,
+    request: Request,
+    auth: AuthContext = Depends(rate_limited("job-poll", "job_poll_limit_per_minute", "poll_rpm", 60)),
+):
     settings = get_settings(request)
     redis = get_redis(request)
 
@@ -128,13 +193,23 @@ async def get_job(job_id: str, request: Request, auth: AuthContext = Depends(get
     route = await RouteStore(redis).get(model)
     if route is None or route.mode != "queue":
         raise ModelNotFound("Job not found")
+    request.state.model = model
     if route.state != "ready":
         raise _not_ready(settings, route.state)
 
-    upstream = await call(
-        get_session(request), "GET", f"{route.url.rstrip('/')}/jobs/{model_job_id}",
-        total_timeout=settings.upstream_timeout,
-        connect_timeout=settings.upstream_connect_timeout,
-        max_response_bytes=settings.max_response_bytes,
-    )
-    return _passthrough(upstream, _rewrite_job_id(upstream.body, model_job_id, job_id))
+    async with get_gate(request).slot(model, route.limits.get("max_concurrency", settings.model_max_concurrency)):
+        upstream = await call(
+            get_session(request), "GET", f"{route.url.rstrip('/')}/jobs/{model_job_id}",
+            total_timeout=settings.upstream_timeout,
+            connect_timeout=settings.upstream_connect_timeout,
+            max_response_bytes=settings.max_response_bytes,
+            budget=get_budget(request),
+            expose_errors=settings.expose_upstream_errors,
+        )
+    body, status = _rewrite_job(upstream.body, model_job_id, job_id, hide_errors=not settings.expose_upstream_errors)
+    if 200 <= upstream.status < 300 and status in _TERMINAL:
+        try:
+            await redis.zrem(_outstanding_key(auth.key_id), job_id)  # frees the slot; a failure only delays that until expiry
+        except RedisError:
+            logger.warning("Could not release a finished job's slot", exc_info=True)
+    return _passthrough(upstream, body)

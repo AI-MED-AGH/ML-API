@@ -2,7 +2,7 @@ import hashlib
 import hmac
 import re
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 _KEY_RE = re.compile(r"mlapi_([A-Za-z0-9]{12})_([A-Za-z0-9_-]{43})", re.ASCII)
 
@@ -53,6 +53,7 @@ class AuthContext:
     key_id: str
     allowed_models: tuple[str, ...]
     allow_all: bool
+    limits: dict[str, int] = field(default_factory=dict)
 
     def can_use(self, model: str) -> bool:
         return model_allowed(model, self.allowed_models, self.allow_all)

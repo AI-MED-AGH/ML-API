@@ -6,6 +6,7 @@ from redis.exceptions import RedisError
 
 from src.auth.keys import AuthContext, is_expired, parse_key, verify_secret
 from src.common.errors import RedisUnavailable, Unauthorized
+from src.limits import KEY_FIELDS, parse_limits
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,7 @@ class KeyStore:
             key_id=parsed.key_id,
             allowed_models=tuple(record.get("allowed_models") or ()),
             allow_all=record.get("allow_all") is True,
+            limits=parse_limits(record.get("limits"), KEY_FIELDS),
         )
 
     @staticmethod

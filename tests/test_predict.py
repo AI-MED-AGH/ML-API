@@ -215,6 +215,9 @@ class FlakyWrites:
     def scan_iter(self, *a, **k):
         return self._inner.scan_iter(*a, **k)
 
+    def pipeline(self, *a, **k):  # the rate limiter's counters keep working
+        return self._inner.pipeline(*a, **k)
+
     async def set(self, *a, **k):
         raise RedisConnectionError("write failed")
 

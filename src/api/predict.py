@@ -12,7 +12,8 @@ from src.common.errors import (
     RequestInvalid,
     WrongMode,
 )
-from src.deps import get_auth, get_redis, get_session, get_settings
+from src.deps import get_budget, get_gate, get_redis, get_session, get_settings, rate_limited
+from src.limits import enforce_model_limits
 from src.routing.activity import ActivityTracker
 from src.routing.proxy import forward
 from src.routing.routes import RouteStore
@@ -51,7 +52,9 @@ def parse_predict_body(raw: bytes) -> tuple[str, dict]:
 
 
 @router.post("/predict")
-async def predict(request: Request, auth: AuthContext = Depends(get_auth)):
+async def predict(
+    request: Request, auth: AuthContext = Depends(rate_limited("predict", "rate_limit_per_minute", "rpm", 60))
+):
     settings = get_settings(request)
     redis = get_redis(request)
 
@@ -63,8 +66,10 @@ async def predict(request: Request, auth: AuthContext = Depends(get_auth)):
     route = await RouteStore(redis).get(model)
     if route is None:
         raise ModelNotFound("Model not found")
+    request.state.model = model  # only real models, so a client cannot invent usage entries
     if route.mode != "sync":
         raise WrongMode("This model only accepts jobs; use POST /jobs")
+    await enforce_model_limits(request, auth, model, route)
 
     await ActivityTracker(redis, settings.activity_throttle_seconds).touch(model)
 
@@ -79,14 +84,17 @@ async def predict(request: Request, auth: AuthContext = Depends(get_auth)):
             },
         )
 
-    upstream = await forward(
-        get_session(request),
-        route.url,
-        payload,
-        total_timeout=settings.upstream_timeout,
-        connect_timeout=settings.upstream_connect_timeout,
-        max_response_bytes=settings.max_response_bytes,
-    )
+    async with get_gate(request).slot(model, route.limits.get("max_concurrency", settings.model_max_concurrency)):
+        upstream = await forward(
+            get_session(request),
+            route.url,
+            payload,
+            total_timeout=settings.upstream_timeout,
+            connect_timeout=settings.upstream_connect_timeout,
+            max_response_bytes=settings.max_response_bytes,
+            budget=get_budget(request),
+            expose_errors=settings.expose_upstream_errors,
+        )
     headers = {"Retry-After": upstream.retry_after} if upstream.retry_after else None
     return Response(
         content=upstream.body,

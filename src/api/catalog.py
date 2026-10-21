@@ -14,11 +14,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-async def _read_schema(redis, name: str) -> dict | None:
-    try:
-        raw = await redis.get(f"schema:{name}")
-    except RedisError:
-        raise RedisUnavailable("Authentication backend unavailable")
+def _parse_schema(raw: str | None) -> dict | None:
     if raw is None:
         return None
     try:
@@ -29,22 +25,32 @@ async def _read_schema(redis, name: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+async def _read_schema(redis, name: str) -> dict | None:
+    try:
+        raw = await redis.get(f"schema:{name}")
+    except RedisError:
+        raise RedisUnavailable("Authentication backend unavailable")
+    return _parse_schema(raw)
+
+
 @router.get("/models")
 async def list_models(request: Request, auth: AuthContext = Depends(get_auth)):
     redis = get_redis(request)
     store = RouteStore(redis)
+    names = [name for name in await store.list_names() if auth.can_use(name)]
+    routes = await store.get_many(names)
+    names = [name for name in names if name in routes]
+    try:
+        raw_schemas = await redis.mget([f"schema:{name}" for name in names]) if names else []
+    except RedisError:
+        raise RedisUnavailable("Authentication backend unavailable")
     models = []
-    for name in await store.list_names():
-        if not auth.can_use(name):
-            continue
-        route = await store.get(name)
-        if route is None:
-            continue
-        schema = await _read_schema(redis, name)
+    for name, raw in zip(names, raw_schemas):
+        schema = _parse_schema(raw)
         models.append(
             {
                 "name": name,
-                "state": route.state,
+                "state": routes[name].state,
                 "version": schema.get("model_version") if schema else None,
             }
         )

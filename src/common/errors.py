@@ -45,9 +45,24 @@ class PayloadTooLarge(ApiError):
     error_type = "PayloadTooLarge"
 
 
+class RateLimited(ApiError):
+    status_code = 429
+    error_type = "RateLimited"
+
+
+class ModelBusy(ApiError):
+    status_code = 429
+    error_type = "ModelBusy"
+
+
 class ModelUnavailable(ApiError):
     status_code = 503
     error_type = "ModelUnavailable"
+
+
+class RouterBusy(ApiError):
+    status_code = 503
+    error_type = "RouterBusy"
 
 
 class UpstreamError(ApiError):

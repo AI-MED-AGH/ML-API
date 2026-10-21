@@ -49,6 +49,12 @@ class BrokenRedis:
     def scan_iter(self, *_a, **_k):
         raise RedisConnectionError("down")
 
+    async def exists(self, *_a, **_k):
+        raise RedisConnectionError("down")
+
+    async def mget(self, *_a, **_k):
+        raise RedisConnectionError("down")
+
     async def set(self, *_a, **_k):
         raise RedisConnectionError("down")
 
@@ -61,6 +67,8 @@ async def test_route_store_redis_failure():
         await RouteStore(BrokenRedis()).get("m1")
     with pytest.raises(RedisUnavailable):
         await RouteStore(BrokenRedis()).list_names()
+    with pytest.raises(RedisUnavailable):
+        await RouteStore(BrokenRedis()).get_many(["m1"])
 
 
 async def test_activity_is_throttled(redis):

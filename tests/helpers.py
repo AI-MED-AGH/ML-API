@@ -20,6 +20,7 @@ async def store_key(
     allow_all=False,
     expires_at=None,
     name="test",
+    limits=None,
 ) -> str:
     key_id, secret, raw = new_key()
     await redis.set(
@@ -31,6 +32,7 @@ async def store_key(
                 "allow_all": allow_all,
                 "expires_at": expires_at,
                 "name": name,
+                **({"limits": limits} if limits is not None else {}),
             }
         ),
     )
@@ -44,8 +46,9 @@ async def store_route(
     state: str = "ready",
     url: str = "http://m-x.mlapi-models.svc:8000",
     mode: str = "sync",
+    limits=None,
 ) -> None:
-    await redis.set(
-        f"route:{model}",
-        json.dumps({"url": url, "state": state, "mode": mode}),
-    )
+    record = {"url": url, "state": state, "mode": mode}
+    if limits is not None:
+        record["limits"] = limits
+    await redis.set(f"route:{model}", json.dumps(record))

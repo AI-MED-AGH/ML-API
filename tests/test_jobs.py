@@ -102,6 +102,15 @@ async def test_losing_the_ownership_record_fails_the_request(redis, http_session
         def scan_iter(self, *a, **k):
             return self._inner.scan_iter(*a, **k)
 
+        def pipeline(self, *a, **k):  # the rate limiter's counters keep working
+            return self._inner.pipeline(*a, **k)
+
+        async def zremrangebyscore(self, *a, **k):
+            return await self._inner.zremrangebyscore(*a, **k)
+
+        async def zcard(self, *a, **k):
+            return await self._inner.zcard(*a, **k)
+
         async def set(self, *a, **k):
             raise RedisConnectionError("write failed")
 
