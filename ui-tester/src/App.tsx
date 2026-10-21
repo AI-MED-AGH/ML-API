@@ -18,6 +18,13 @@ const put = (k: string, v: string) => {
     /* storage blocked */
   }
 };
+const stored = () => {
+  try {
+    return localStorage.getItem("theme") === "light" ? "light" : "dark"; // the mark is drawn for a dark ground
+  } catch {
+    return "dark";
+  }
+};
 const pretty = (v: unknown) => (typeof v === "string" ? v : JSON.stringify(v, null, 2));
 
 function Json({ value }: { value: unknown }) {
@@ -37,12 +44,25 @@ export function App() {
   const [view, setView] = useState<Entry | null>(null);
   const [jsonError, setJsonError] = useState<string | null>(null);
   const [health, setHealth] = useState<string>("…");
+  const [theme, setTheme] = useState<"dark" | "light">(stored);
   const nextId = useRef(1);
   const polling = useRef(false);
+  const loadSeq = useRef(0); // the key field reloads on every keystroke; only the latest response may win
+
+  useEffect(() => {
+    document.documentElement.classList.toggle("dark", theme === "dark");
+    try {
+      localStorage.setItem("theme", theme);
+    } catch {
+      /* storage blocked */
+    }
+  }, [theme]);
 
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
     setListError(null);
     const [h, r] = await Promise.all([call("", "GET", "/health"), key ? call(key, "GET", "/models") : null]);
+    if (seq !== loadSeq.current) return;
     setHealth(h.status === 200 ? "ok" : h.status === 0 ? "unreachable" : "degraded");
     if (!r) return setModels(null);
     if (r.ok) setModels((r.body as { models: ModelInfo[] }).models);
@@ -116,16 +136,31 @@ export function App() {
     polling.current = false;
   }
 
-  const stateClass = (s: string) => (s === "ready" ? "ok" : s === "sleeping" ? "idle" : "warn");
+  const stateClass = (s: string) => (s === "ready" ? "ok" : s === "sleeping" ? "idle" : s === "failed" ? "bad" : ["deploying", "starting"].includes(s) ? "live" : "warn");
 
   return (
     <div className="app">
-      <header>
-        <h1>Router tester</h1>
-        <span className={`pill ${health === "ok" ? "ok" : "warn"}`}>router {health}</span>
+      <header className="bar">
+        <span className="brand">
+          <span className="mark" aria-hidden="true" />
+          <span>
+            MLAPI <small>Router</small>
+          </span>
+        </span>
+        <span className="bar-end">
+          <span className={`pill ${health === "ok" ? "ok" : health === "…" ? "idle" : "bad"}`}>router {health}</span>
+          <button className="ghost" aria-pressed={theme === "dark"} onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}>
+            {theme === "dark" ? "Light theme" : "Dark theme"}
+          </button>
+        </span>
       </header>
 
-      <section className="card">
+      <div className="hero">
+        <h1>Router tester</h1>
+        <p className="lede">Call a model through the Router with an API key. Sync models answer on /predict; queue models are submitted to /jobs and polled.</p>
+      </div>
+
+      <section className="panel">
         <label htmlFor="key">API key</label>
         <div className="row">
           <input
@@ -145,7 +180,7 @@ export function App() {
       </section>
 
       <div className="grid">
-        <section className="card">
+        <section className="panel">
           <h2>Models</h2>
           {!key ? (
             <p className="muted">Enter an API key to list the models it may use.</p>
@@ -168,10 +203,10 @@ export function App() {
           )}
         </section>
 
-        <section className="card">
+        <section className="panel">
           <h2>{selected ? `Call ${selected}` : "Call a model"}</h2>
           {!selected ? (
-            <p className="muted">Pick a model.</p>
+            <div className="empty"><span className="mark" aria-hidden="true" /><p className="muted">Pick a model.</p></div>
           ) : (
             <>
               <label htmlFor="body">Request body (without “model”)</label>
@@ -200,19 +235,25 @@ export function App() {
         </section>
       </div>
 
-      <section className="card">
+      <section className="panel" aria-live="polite">
         <h2>Response</h2>
         {!view ? (
-          <p className="muted">Nothing sent yet.</p>
+          <div className="empty"><span className="mark" aria-hidden="true" /><p className="muted">Nothing sent yet.</p></div>
         ) : (
           <>
-            <p>
-              <span className={`pill ${view.reply.ok ? "ok" : "warn"}`}>{view.reply.status || "network error"}</span>{" "}
-              <code>{view.endpoint}</code> · {view.reply.ms} ms
-              {Object.entries(view.reply.headers).map(([k, v]) => (
-                <span key={k} className="hdr">{k}: {v}</span>
-              ))}
-            </p>
+            <div className="status">
+              <span className={`code ${view.reply.ok ? "" : "err"}`}>{view.reply.status || "ERR"}</span>
+              <span className="meta">
+                <code>{view.endpoint}</code> · {view.reply.ms} ms{!view.reply.ok && " · failed"}
+              </span>
+            </div>
+            {Object.keys(view.reply.headers).length > 0 && (
+              <div className="hdrs">
+                {Object.entries(view.reply.headers).map(([k, v]) => (
+                  <span key={k} className="hdr">{k}: {v}</span>
+                ))}
+              </div>
+            )}
             <Json value={view.reply.body} />
           </>
         )}
