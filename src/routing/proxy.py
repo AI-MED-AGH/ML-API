@@ -14,6 +14,9 @@ from src.routing.budget import ResponseBudget
 logger = logging.getLogger(__name__)
 
 
+_SEND_PIECE = 64 * 1024
+
+
 def _nothing() -> None:
     pass
 
@@ -32,13 +35,28 @@ class HeldResponse(Response):
     """A reply that keeps its bytes counted against the budget until they have been handed to the server,
     so a client that reads slowly cannot hold memory the budget thinks is free."""
 
-    def __init__(self, *args, release: Callable[[], None], **kwargs):
+    def __init__(self, *args, release: Callable[[], None], send_timeout: float = 0, **kwargs):
         self._release = release  # first: __del__ must find it even if the rest of __init__ fails
+        self._send_timeout = send_timeout
         super().__init__(*args, **kwargs)
 
     async def __call__(self, scope, receive, send) -> None:
         try:
-            await super().__call__(scope, receive, send)
+            if len(self.body) <= _SEND_PIECE:
+                await super().__call__(scope, receive, send)
+                return
+            # The server copies a whole message into its own buffer at once and only waits for the client between
+            # messages. In pieces, it waits whenever that buffer is full, so this reply is still counted while the
+            # client has not yet read it. content-length is already in raw_headers: the client sees one plain reply.
+            await send({"type": "http.response.start", "status": self.status_code, "headers": self.raw_headers})
+            try:
+                async with asyncio.timeout(self._send_timeout or None):
+                    for offset in range(0, len(self.body), _SEND_PIECE):
+                        await send({"type": "http.response.body", "body": self.body[offset:offset + _SEND_PIECE], "more_body": True})
+                    await send({"type": "http.response.body", "body": b"", "more_body": False})
+            except TimeoutError:
+                # Returning with the reply unfinished makes the server drop the connection and its buffered bytes.
+                logger.warning("Client did not read a %s byte reply within %s s; disconnecting it", len(self.body), self._send_timeout)
         finally:
             self._release()
 

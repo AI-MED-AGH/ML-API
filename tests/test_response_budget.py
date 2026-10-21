@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import httpx
@@ -119,40 +120,37 @@ async def test_large_bodies_are_only_shape_checked(upstream, http_session):
 # ── the budget covers a reply until it has been handed to the server, not just until it was read from the model ──
 
 
-async def _asgi_get_body_sizes(app, method, path, headers, body):
-    """Calls the app directly and records how many reply bytes were counted at the moment each message was sent."""
-    seen: list[int] = []
-    sent = iter([{"type": "http.request", "body": body, "more_body": False}])
-
-    async def receive():
-        try:
-            return next(sent)
-        except StopIteration:
-            return {"type": "http.disconnect"}
-
-    async def send(message):
-        if message["type"] == "http.response.body":
-            seen.append(app.state.budget.in_use)
-
-    scope = {
-        "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": method, "path": path,
-        "raw_path": path.encode(), "query_string": b"", "scheme": "http", "server": ("r", 80), "client": ("c", 1),
-        "root_path": "", "headers": [(k.lower().encode(), v.encode()) for k, v in headers.items()],
-    }
-    await app(scope, receive, send)
-    return seen
-
-
-async def test_a_reply_stays_counted_while_it_is_being_sent(redis, http_session, upstream):
+async def test_a_reply_stays_counted_while_the_client_is_not_reading(redis, http_session, upstream):
+    """The outermost `send` is the server writing to the client; it does not return while the client is not reading."""
     await store_route(redis, "m1", url=upstream.url)
     key = await store_key(redis)
     upstream.body = b'{"v":"' + b"x" * 5000 + b'"}'
     app = create_app(Settings(redis_url="redis://x/0", _env_file=None), redis=redis, session=http_session)
-    seen = await _asgi_get_body_sizes(
-        app, "POST", "/predict", {"X-API-Key": key, "Content-Type": "application/json"},
-        json.dumps({"model": "m1", "data": 1}).encode(),
-    )
-    assert max(seen) >= len(upstream.body)  # a slow reader cannot hold memory the budget no longer knows about
+    client_reads = asyncio.Event()
+    request_sent = False
+
+    async def receive():
+        nonlocal request_sent
+        if not request_sent:
+            request_sent = True
+            return {"type": "http.request", "body": json.dumps({"model": "m1", "data": 1}).encode(), "more_body": False}
+        await asyncio.sleep(3600)
+
+    async def send(message):
+        if message["type"] == "http.response.body":
+            await client_reads.wait()
+
+    scope = {
+        "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": "POST", "path": "/predict",
+        "raw_path": b"/predict", "query_string": b"", "scheme": "http", "server": ("r", 80), "client": ("c", 1),
+        "root_path": "", "headers": [(b"x-api-key", key.encode()), (b"content-type", b"application/json")],
+    }
+    request = asyncio.create_task(app(scope, receive, send))
+    await asyncio.sleep(0.3)
+    held_while_stalled = app.state.budget.in_use
+    client_reads.set()
+    await request
+    assert held_while_stalled >= len(upstream.body)  # a slow reader cannot hold memory the budget no longer knows about
     assert app.state.budget.in_use == 0  # and it is given back afterwards
 
 
@@ -192,3 +190,86 @@ def test_a_response_that_is_never_sent_gives_its_reservation_back():
     HeldResponse(content=b"{}", release=lambda: budget.release(400))
     gc.collect()
     assert budget.in_use == 0
+
+
+# ── a big reply is written out in pieces, so that the server's own write buffer cannot absorb all of it at once ──
+
+
+async def _run_held_response(body: bytes) -> list[dict]:
+    from src.routing.proxy import HeldResponse
+
+    messages: list[dict] = []
+
+    async def send(message):
+        messages.append(message)
+
+    async def receive():
+        return {"type": "http.disconnect"}
+
+    response = HeldResponse(content=body, media_type="application/json", release=lambda: None)
+    await response({"type": "http", "asgi": {"version": "3.0"}}, receive, send)
+    return messages
+
+
+async def test_a_big_reply_is_sent_in_pieces_that_add_up_to_the_whole_body():
+    body = b'{"v":"' + b"x" * 300_000 + b'"}'
+    messages = await _run_held_response(body)
+    start, parts = messages[0], messages[1:]
+    assert start["type"] == "http.response.start"
+    assert dict(start["headers"])[b"content-length"] == str(len(body)).encode()  # clients still see one plain reply
+    assert len(parts) > 2
+    assert all(m["more_body"] for m in parts[:-1]) and parts[-1]["more_body"] is False
+    assert b"".join(m["body"] for m in parts) == body
+    assert max(len(m["body"]) for m in parts) <= 64 * 1024
+
+
+async def test_a_small_reply_is_still_one_message():
+    messages = await _run_held_response(b'{"ok":true}')
+    assert [m["type"] for m in messages] == ["http.response.start", "http.response.body"]
+    assert messages[1]["body"] == b'{"ok":true}' and messages[1].get("more_body", False) is False
+
+
+async def test_a_client_that_stops_reading_is_cut_off_and_the_budget_comes_back():
+    from src.routing.proxy import HeldResponse
+
+    budget = ResponseBudget(10_000_000)
+    body = b'{"v":"' + b"x" * 300_000 + b'"}'
+    budget.reserve(len(body))
+    sent = []
+
+    async def send(message):
+        sent.append(message)
+        if len(sent) >= 3:
+            await asyncio.sleep(3600)  # the client's buffers are full and it reads nothing more
+
+    async def receive():
+        return {"type": "http.disconnect"}
+
+    response = HeldResponse(
+        content=body, media_type="application/json", release=lambda: budget.release(len(body)), send_timeout=0.05
+    )
+    await asyncio.wait_for(response({"type": "http", "asgi": {"version": "3.0"}}, receive, send), timeout=5)
+    assert budget.in_use == 0
+    assert len(sent) == 3  # it stopped there: the reply was never completed
+
+
+async def test_a_send_timeout_of_zero_waits_as_long_as_the_client_needs():
+    from src.routing.proxy import HeldResponse
+
+    body = b'{"v":"' + b"x" * 300_000 + b'"}'
+    sent = []
+
+    async def send(message):
+        await asyncio.sleep(0.01)
+        sent.append(message)
+
+    async def receive():
+        return {"type": "http.disconnect"}
+
+    response = HeldResponse(content=body, media_type="application/json", release=lambda: None, send_timeout=0)
+    await response({"type": "http", "asgi": {"version": "3.0"}}, receive, send)
+    assert sent[-1]["more_body"] is False
+
+
+def test_the_default_send_deadline_is_a_couple_of_minutes():
+    assert Settings(redis_url="redis://x/0", _env_file=None).response_send_timeout == 120

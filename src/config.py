@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     # Model replies held in memory at once, per Router process (0 = unlimited). Peak use is about twice this (the reply
     # is joined into one buffer), so keep it well under the pod's memory limit.
     max_inflight_response_bytes: int = 128 * 1024 * 1024
+    # A client that has not taken a big reply within this many seconds is disconnected, freeing the memory it holds (0 = never).
+    response_send_timeout: float = 120
     job_owner_ttl: int = 86400
     upstream_max_connections: int = 200
     upstream_max_connections_per_host: int = 20

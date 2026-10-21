@@ -7,7 +7,8 @@
   (per key, for all keys, concurrency) in their route. Refusals are `429` with `Retry-After`.
 - A cap on unfinished jobs per key, and on model replies held in memory (`MAX_INFLIGHT_RESPONSE_BYTES`, `503 RouterBusy`).
   Replies over 1 MiB are shape-checked instead of fully parsed, and large job results are no longer re-encoded.
-  A reply stays counted until it has been handed to the server, so slow readers cannot hold memory outside the cap.
+  A reply stays counted until the client has taken it (big replies are written in pieces, so the server waits for slow clients),
+  and a client that has not taken one within `RESPONSE_SEND_TIMEOUT` (120 s) is disconnected.
   A failed job whose reply is over 1 MiB gets a generic body (its error text cannot be located without parsing it).
 - Per-key request log and usage counters (`usage:<day>:<key>`), read by the Supervisor.
 - Model 5xx bodies and failed jobs' error text are replaced by generic messages (`EXPOSE_UPSTREAM_ERRORS` to turn that off).

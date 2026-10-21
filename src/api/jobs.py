@@ -37,7 +37,7 @@ def _not_ready(settings, state: str) -> ModelUnavailable:
     )
 
 
-def _passthrough(upstream: UpstreamResponse, body: bytes | None = None) -> HeldResponse:
+def _passthrough(upstream: UpstreamResponse, body: bytes | None = None, *, send_timeout: float = 0) -> HeldResponse:
     headers = {"Retry-After": upstream.retry_after} if upstream.retry_after else None
     return HeldResponse(
         content=upstream.body if body is None else body,
@@ -45,6 +45,7 @@ def _passthrough(upstream: UpstreamResponse, body: bytes | None = None) -> HeldR
         media_type="application/json",
         headers=headers,
         release=upstream.release,
+        send_timeout=send_timeout,
     )
 
 
@@ -151,7 +152,7 @@ async def submit_job(
             expose_errors=settings.expose_upstream_errors,
         )
     if not 200 <= upstream.status < 300:
-        return _passthrough(upstream)
+        return _passthrough(upstream, send_timeout=settings.response_send_timeout)
 
     try:
         model_job_id = _extract_job_id(upstream.body)
@@ -222,7 +223,7 @@ async def get_job(
                 await redis.zrem(_outstanding_key(auth.key_id), job_id)  # frees the slot; a failure only delays that until expiry
             except RedisError:
                 logger.warning("Could not release a finished job's slot", exc_info=True)
-        return _passthrough(upstream, body)
+        return _passthrough(upstream, body, send_timeout=settings.response_send_timeout)
     except BaseException:
         upstream.release()
         raise

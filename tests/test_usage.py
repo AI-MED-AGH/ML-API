@@ -104,7 +104,7 @@ async def test_a_failing_counter_never_fails_the_request(redis, http_session, up
 async def test_each_request_is_logged_without_the_secret(redis, http_session, upstream, caplog):
     await store_route(redis, "m1", url=upstream.url)
     key = await store_key(redis)
-    secret = key.split("_")[2]
+    secret = key.split("_", 2)[2]
     caplog.set_level(logging.INFO, logger="src.usage")
     async with await make_client(redis, http_session) as client:
         await client.post("/predict", headers={"X-API-Key": key}, json={"model": "m1", "data": 1})

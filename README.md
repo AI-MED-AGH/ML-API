@@ -71,6 +71,12 @@ from when they are read from the model until they have been sent to the client; 
 about twice that, so keep it well under the pod's memory limit. Replies above 1 MiB are only checked for a JSON object/array
 shape, not fully parsed, because parsing blocks the whole replica; a failed job's reply that large is replaced by a generic one.
 
+A reply stays counted until the client has taken it: replies over 64 KiB are written in pieces, so the server waits for a slow
+client instead of buffering everything at once. A client that has not taken a big reply within `RESPONSE_SEND_TIMEOUT` seconds
+(default 120, `0` = never) is disconnected. Until then it holds that memory, so a client that reads slowly on purpose can make
+other requests wait for budget (`503 RouterBusy`) for up to that long. A reverse proxy that buffers whole replies (nginx does by
+default) takes this off the Router; a limit per key on the memory held is not implemented.
+
 ## Running
 
 ```shell

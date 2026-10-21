@@ -101,4 +101,5 @@ async def predict(
         media_type="application/json",
         headers=headers,
         release=upstream.release,
+        send_timeout=settings.response_send_timeout,
     )
