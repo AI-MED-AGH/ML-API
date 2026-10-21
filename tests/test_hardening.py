@@ -169,3 +169,32 @@ async def test_catalog_reads_each_models_records_in_bulk(redis, http_session):
         r = await client.get("/models", headers={"X-API-Key": key})
     assert len(r.json()["models"]) == 10
     assert counting.gets <= 2  # the key record, and nothing per model
+
+
+async def test_a_big_failed_jobs_error_text_is_replaced_too(redis, http_session, upstream):
+    # replies over 1 MiB are not parsed, but they must not be a way round the error sanitizing
+    await store_route(redis, "m1", url=upstream.url, mode="queue")
+    key = await store_key(redis)
+    await redis.set("jobowner:m1~j1", key.split("_")[1])
+    upstream.job_get_body = (
+        b'{"job_id":"j1","status":"failed","result":null,"error":"' + LEAK.encode() + b'","padding":"'
+        + b"x" * (1024 * 1024 + 10) + b'"}'
+    )
+    async with await make_client(redis, http_session) as client:
+        r = await client.get("/jobs/m1~j1", headers={"X-API-Key": key})
+    assert r.status_code == 200
+    assert "weights" not in r.text
+    body = r.json()
+    assert (body["job_id"], body["status"], body["error"]) == ("m1~j1", "failed", "The job failed")
+    assert len(r.content) < 1024
+
+
+async def test_a_big_successful_job_result_is_still_passed_on_whole(redis, http_session, upstream):
+    await store_route(redis, "m1", url=upstream.url, mode="queue")
+    key = await store_key(redis)
+    await redis.set("jobowner:m1~j1", key.split("_")[1])
+    upstream.job_get_body = b'{"job_id":"j1","status":"succeeded","result":{"v":"' + b"x" * (1024 * 1024 + 10) + b'"}}'
+    async with await make_client(redis, http_session) as client:
+        r = await client.get("/jobs/m1~j1", headers={"X-API-Key": key})
+    assert r.json()["job_id"] == "m1~j1"
+    assert len(r.json()["result"]["v"]) == 1024 * 1024 + 10

@@ -2,7 +2,6 @@ import json
 import re
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import Response
 
 from src.auth.keys import AuthContext
 from src.common.errors import (
@@ -15,7 +14,7 @@ from src.common.errors import (
 from src.deps import get_budget, get_gate, get_redis, get_session, get_settings, rate_limited
 from src.limits import enforce_model_limits
 from src.routing.activity import ActivityTracker
-from src.routing.proxy import forward
+from src.routing.proxy import HeldResponse, forward
 from src.routing.routes import RouteStore
 from src.routing.wake import WakeRequester
 
@@ -96,9 +95,10 @@ async def predict(
             expose_errors=settings.expose_upstream_errors,
         )
     headers = {"Retry-After": upstream.retry_after} if upstream.retry_after else None
-    return Response(
+    return HeldResponse(
         content=upstream.body,
         status_code=upstream.status,
         media_type="application/json",
         headers=headers,
+        release=upstream.release,
     )

@@ -66,9 +66,10 @@ message, because they can contain file paths and internals. 4xx bodies (the mode
 `ENABLE_DOCS` (default off) serves `/docs` and `/openapi.json`. `HEALTH_CACHE_SECONDS` (default 2) is how long `/health` reuses
 its last Redis check.
 
-`MAX_INFLIGHT_RESPONSE_BYTES` (default 128 MiB) caps the model replies one Router process holds in memory at once; peak use is
+`MAX_INFLIGHT_RESPONSE_BYTES` (default 128 MiB) caps the model replies one Router process holds in memory at once,
+from when they are read from the model until they have been sent to the client; peak use is
 about twice that, so keep it well under the pod's memory limit. Replies above 1 MiB are only checked for a JSON object/array
-shape, not fully parsed, because parsing blocks the whole replica.
+shape, not fully parsed, because parsing blocks the whole replica; a failed job's reply that large is replaced by a generic one.
 
 ## Running
 

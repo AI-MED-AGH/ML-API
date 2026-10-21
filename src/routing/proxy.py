@@ -2,9 +2,11 @@ import asyncio
 import json
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import aiohttp
+from fastapi.responses import Response
 
 from src.common.errors import RouterBusy, UpstreamError, UpstreamTimeout
 from src.routing.budget import ResponseBudget
@@ -12,11 +14,36 @@ from src.routing.budget import ResponseBudget
 logger = logging.getLogger(__name__)
 
 
+def _nothing() -> None:
+    pass
+
+
 @dataclass(frozen=True)
 class UpstreamResponse:
     status: int
     body: bytes  # raw bytes, validated as JSON but never re-encoded
     retry_after: str | None = None
+    # The body stays counted against the ResponseBudget until this is called (once is enough, more is harmless).
+    # Pass it on with the body (HeldResponse), or call it when the body is not sent on.
+    release: Callable[[], None] = _nothing
+
+
+class HeldResponse(Response):
+    """A reply that keeps its bytes counted against the budget until they have been handed to the server,
+    so a client that reads slowly cannot hold memory the budget thinks is free."""
+
+    def __init__(self, *args, release: Callable[[], None], **kwargs):
+        self._release = release  # first: __del__ must find it even if the rest of __init__ fails
+        super().__init__(*args, **kwargs)
+
+    async def __call__(self, scope, receive, send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self._release()
+
+    def __del__(self):
+        self._release()  # a reply that was built but never sent must not keep the budget reserved for good
 
 
 _RETRY_AFTER_RE = re.compile(r"[0-9]{1,10}", re.ASCII)
@@ -37,6 +64,18 @@ def _looks_like_json(body: bytes) -> bool:
         return True
     head, tail = body[:64].lstrip(), body[-64:].rstrip()  # slices: never copies the whole body
     return bool(head) and bool(tail) and _BRACKETS.get(head[0]) == tail[-1]
+
+
+def _release_once(budget: ResponseBudget, size: int) -> Callable[[], None]:
+    done = False
+
+    def release() -> None:
+        nonlocal done
+        if not done:
+            done = True
+            budget.release(size)
+
+    return release
 
 
 def _safe_retry_after(value: str | None) -> str | None:
@@ -61,6 +100,7 @@ async def call(
     timeout = aiohttp.ClientTimeout(total=total_timeout, sock_connect=connect_timeout)
     kwargs = {"json": payload} if payload is not None else {}
     reserved = 0
+    handed_over = False  # the reservation now belongs to the UpstreamResponse
     try:
         # never follow redirects: a model container must not be able to aim the Router at other hosts
         async with session.request(method, url, timeout=timeout, allow_redirects=False, **kwargs) as response:
@@ -85,9 +125,12 @@ async def call(
             if not _looks_like_json(body):
                 logger.warning("Upstream returned a non-JSON body (status %s)", status)
                 raise UpstreamError("Model returned an invalid response")
+            release = _nothing
             if status >= 500 and not expose_errors:
-                body = _MODEL_ERROR_BODY  # the model's own text can name files and internals
-            return UpstreamResponse(status, body, _safe_retry_after(response.headers.get("Retry-After")))
+                body = _MODEL_ERROR_BODY  # the model's own text can name files and internals; the bytes read are dropped
+            elif budget is not None:
+                release, handed_over = _release_once(budget, reserved), True
+            return UpstreamResponse(status, body, _safe_retry_after(response.headers.get("Retry-After")), release)
     except asyncio.TimeoutError:
         raise UpstreamTimeout("Model did not respond in time")
     except aiohttp.ClientError as exc:
@@ -95,7 +138,7 @@ async def call(
         logger.warning("Upstream request failed: %s", type(exc).__name__)
         raise UpstreamError("Could not reach the model")
     finally:
-        if budget is not None:
+        if budget is not None and not handed_over:
             budget.release(reserved)
 
 

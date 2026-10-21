@@ -4,7 +4,7 @@ import re
 import time
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse
 from redis.exceptions import RedisError
 
 from src.api.predict import MODEL_NAME_RE, parse_predict_body, read_limited_body
@@ -19,7 +19,7 @@ from src.common.errors import (
 )
 from src.deps import get_budget, get_gate, get_redis, get_session, get_settings, rate_limited
 from src.limits import enforce_model_limits
-from src.routing.proxy import FULL_PARSE_LIMIT, UpstreamResponse, call
+from src.routing.proxy import FULL_PARSE_LIMIT, HeldResponse, UpstreamResponse, call
 from src.routing.routes import RouteStore
 
 logger = logging.getLogger(__name__)
@@ -27,6 +27,7 @@ router = APIRouter()
 _TERMINAL = ("succeeded", "failed")
 
 JOB_ID_RE = re.compile(r"[A-Za-z0-9-]{1,64}")
+_FAILED_JOB_BODY = b'{"job_id":"%s","status":"failed","error":"The job failed","error_type":"JobFailed"}'
 
 
 def _not_ready(settings, state: str) -> ModelUnavailable:
@@ -36,13 +37,14 @@ def _not_ready(settings, state: str) -> ModelUnavailable:
     )
 
 
-def _passthrough(upstream: UpstreamResponse, body: bytes | None = None) -> Response:
+def _passthrough(upstream: UpstreamResponse, body: bytes | None = None) -> HeldResponse:
     headers = {"Retry-After": upstream.retry_after} if upstream.retry_after else None
-    return Response(
+    return HeldResponse(
         content=upstream.body if body is None else body,
         status_code=upstream.status,
         media_type="application/json",
         headers=headers,
+        release=upstream.release,
     )
 
 
@@ -70,7 +72,11 @@ def _rewrite_job(body: bytes, model_id: str, public_id: str, *, hide_errors: boo
             head,
             count=1,
         )
-        return head + tail, status.group(1).decode() if status else None
+        status = status.group(1).decode() if status else None
+        if hide_errors and status == "failed":
+            # the error text could be anywhere in a body this size: send a generic one instead of searching for it
+            return _FAILED_JOB_BODY % public_id.encode(), status
+        return head + tail, status
     try:
         data = json.loads(body)
     except (ValueError, RecursionError):
@@ -147,7 +153,10 @@ async def submit_job(
     if not 200 <= upstream.status < 300:
         return _passthrough(upstream)
 
-    model_job_id = _extract_job_id(upstream.body)
+    try:
+        model_job_id = _extract_job_id(upstream.body)
+    finally:
+        upstream.release()  # only the id is kept: the reply itself is not sent on
     public_id = f"{model}~{model_job_id}"
     try:
         # NX: a model that answers with an id that already exists must not take that job over from its owner
@@ -206,10 +215,14 @@ async def get_job(
             budget=get_budget(request),
             expose_errors=settings.expose_upstream_errors,
         )
-    body, status = _rewrite_job(upstream.body, model_job_id, job_id, hide_errors=not settings.expose_upstream_errors)
-    if 200 <= upstream.status < 300 and status in _TERMINAL:
-        try:
-            await redis.zrem(_outstanding_key(auth.key_id), job_id)  # frees the slot; a failure only delays that until expiry
-        except RedisError:
-            logger.warning("Could not release a finished job's slot", exc_info=True)
-    return _passthrough(upstream, body)
+    try:
+        body, status = _rewrite_job(upstream.body, model_job_id, job_id, hide_errors=not settings.expose_upstream_errors)
+        if 200 <= upstream.status < 300 and status in _TERMINAL:
+            try:
+                await redis.zrem(_outstanding_key(auth.key_id), job_id)  # frees the slot; a failure only delays that until expiry
+            except RedisError:
+                logger.warning("Could not release a finished job's slot", exc_info=True)
+        return _passthrough(upstream, body)
+    except BaseException:
+        upstream.release()
+        raise
