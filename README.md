@@ -61,3 +61,19 @@ redis-cli SET route:my-model '{"url": "http://localhost:8001", "state": "ready",
 # key: "hash" is sha256 of the secret part of mlapi_<12 chars>_<43 chars>
 redis-cli SET key:<12-char-id> '{"hash": "<sha256 hex>", "allowed_models": ["my-model"], "allow_all": false, "expires_at": null, "name": "dev"}'
 ```
+
+## Trying a model in the browser
+
+`ui-tester/` is a small dev UI (Vite + React) for testing inference against a running Router. It is a dev/showcase tool,
+not production software, and it is not part of the compose stack.
+
+```shell
+cd ui-tester
+npm install
+ROUTER_URL=http://127.0.0.1:8000 npm run dev   # http://localhost:5173
+```
+
+Enter an API key (create one in the Supervisor admin UI). The UI lists the models the key can use, loads each model's
+schema and example payload, and sends `/predict` (sync models) or `/jobs` and polls `/jobs/{id}` (queue models). For each
+call it shows the status, `X-Model-Status`, `Retry-After`, latency and the response body. The dev server proxies `/api/*`
+to the Router, so no CORS setup is needed, and the key is kept in `sessionStorage` only. See [ui-tester/README.md](ui-tester/README.md).
